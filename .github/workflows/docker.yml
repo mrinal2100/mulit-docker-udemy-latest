@@ -1,0 +1,70 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    # Use an Ubuntu runner, which is similar to the 'dist: focal' and 'sudo: required' environment.
+    runs-on: ubuntu-latest
+    
+    # Define environment variables for AWS and Docker authentication secrets.
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      DOCKER_ID: ${{ secrets.DOCKER_ID }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      
+    steps:
+      - name: Checkout code
+        # Checks out your repository code so the workflow can access it.
+        uses: actions/checkout@v4
+
+      - name: Build test image
+        # Corresponds to 'before_install'
+        run: docker build -t mrinal2100/react-test -f ./client/Dockerfile.dev ./client
+
+      - name: Run tests
+        # Corresponds to 'script'
+        run: docker run -e CI=true mrinal2100/react-test npm test
+
+      - name: Log in to Docker Hub
+        # Corresponds to the Docker login part of 'after_success'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKER_ID }}
+          password: ${{ env.DOCKER_PASSWORD }}
+
+      - name: Build and push all images
+        # Corresponds to the build and push parts of 'after_success'
+        run: |
+          # Build images
+          docker build -t mrinal2100/multi-client -f ./client/Dockerfile.prod ./client
+          docker build -t mrinal2100/multi-nginx -f ./nginx/Dockerfile.prod ./nginx
+          docker build -t mrinal2100/multi-server -f ./server/Dockerfile.prod ./server
+          docker build -t mrinal2100/multi-worker  -f ./worker/Dockerfile.prod ./worker
+
+          # Push images
+          docker push mrinal2100/multi-client
+          docker push mrinal2100/multi-nginx
+          docker push mrinal2100/multi-server
+          docker push mrinal2100/multi-worker
+      
+      - name: Zip Dockerrun.aws.json
+        run: zip -r deploy.zip Dockerrun.aws.json
+      - name: Deploy to Elastic Beanstalk
+        # Corresponds to the 'deploy' section. Uses the official AWS action.
+        uses: einaregilsson/beanstalk-deploy@v21
+        with:
+          aws_access_key: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws_secret_key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          application_name: multi-docker
+          environment_name: Multi-docker-env
+          version_label: ${{ github.sha }} # Use commit SHA as version label
+          region: us-east-1
+          deployment_package: deploy.zip # This assumes your deployment files are in a directory named 'docker-multi'
+          # Note: The 'bucket_name' and 'bucket_path' are typically handled internally by the action
+          # when providing a deployment_package, but the specific paths are determined by
+          # how you package your application for deployment.
